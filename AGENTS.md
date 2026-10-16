@@ -19,6 +19,9 @@ physically printed on the product, in its perspective, curvature, folds and ligh
    - round and rigid → `"mode": "revolve"`
    - soft → `"mode": "free"` (default)
 
+   On knitted garments add `"knit": true`: it measures `angle_v` and the fabric's drift for you. If folds come out
+   wrong because of shadows, stains or an old print, add `"fold_source": "depth"` (needs torch + transformers).
+
    For `revolve`, check the result's cache file in `.mockup_cache/`. `ring_err_px` should be a few pixels and `camera_tilt_deg`
    should match the view: positive means the camera looks down. If it does not, the ring band caught the wrong edge.
    Draw `ring_pts` over the photo to see what it caught, then move the band.

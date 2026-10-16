@@ -11,7 +11,11 @@ Job JSON:
   "ink": "#1c1917" (one-colour print; omit to keep the logo's own colours),
   "ink_ref": "#d5d4d3" optional fabric colour the ink was measured against; otherwise the local fabric is used,
   "opacity": 1.0, "light": 1.0 (0 = flat ink, 1 = full photo light and texture through the ink), "soft": 0.8,
-  "mode": "free" (default, settings above) | "quad" | "revolve" }
+  "mode": "free" (default, settings above) | "quad" | "revolve",
+  "knit": true   (free mode, knitted garments) read the knit lines around the logo: sets angle_v automatically,
+                 lets the logo's verticals follow the knit through folds, and compresses it where the fabric turns away,
+  "fold_source": "shading" (default) | "depth"   what the fold displacement is computed from; "depth" uses a small
+                 depth network (needs torch + transformers) and is not fooled by stains, shadows or existing prints }
 
 mode "quad": "quad": [[x,y] top-left, top-right, bottom-right, bottom-left] of the logo box in the photo (flat faces).
 mode "revolve": bottles, mugs, tumblers, cans, cones. The shape is read off the photo:
@@ -128,10 +132,72 @@ def revolve_maps(model, X, Y):
     rr = np.interp(y0, rows, r); sn = (x - np.polyval(ax, y0))/np.maximum(rr, 1e-3)
     return np.arcsin(np.clip(sn, -1, 1)), np.interp(y0, rows, s_tab)*S, rr*S, np.abs(sn) < 0.995
 
+def _cache_path(job, tag, extra):
+    key = hashlib.md5(json.dumps([os.path.abspath(job['photo']), tag, extra], sort_keys=True).encode()).hexdigest()[:12]
+    return os.path.join(os.path.dirname(os.path.abspath(job.get('_job_path', 'x'))), '.mockup_cache', f'{tag}-{key}.npz')
+
+def knit_field(P, job, box, step=64, win=128):
+    """Knit wale direction and pitch on a coarse grid inside box (full-res px). Batched FFT; cached.
+    angle (deg): + = the knit lines move left going down (same sign as angle_v); pitch: px per wale."""
+    cp = _cache_path(job, 'knit', [list(map(int, box)), step, win])
+    if os.path.exists(cp): return dict(np.load(cp))
+    x0, y0, x1, y1 = map(int, box); g = np.asarray(P.convert('L').crop((x0, y0, x1, y1)), np.float32)
+    g = g - gaussian_filter(g, 4)
+    ys = np.arange(win//2, g.shape[0] - win//2, step); xs = np.arange(win//2, g.shape[1] - win//2, step)
+    if len(ys) == 0 or len(xs) == 0: return None
+    yy, xx = np.meshgrid(np.arange(-win//2, win//2), np.arange(-win//2, win//2), indexing='ij')
+    R = np.hypot(xx, yy); band = (R > 6) & (R < win*0.45) & (yy >= 0) & ~((yy == 0) & (xx < 0))
+    w2 = np.outer(np.hanning(win), np.hanning(win)).astype(np.float32)
+    A = np.zeros((len(ys), len(xs))); Pt = np.zeros_like(A); Q = np.zeros_like(A)
+    for i, cy_ in enumerate(ys):                          # one FFT batch per grid row keeps memory small
+        patches = np.stack([g[cy_-win//2:cy_+win//2, cx_-win//2:cx_+win//2]*w2 for cx_ in xs])
+        F = np.abs(np.fft.fftshift(np.fft.fft2(patches), axes=(1, 2)))*band
+        for j in range(len(xs)):
+            f = F[j]; k = np.unravel_index(f.argmax(), f.shape); q = f[k]/max(np.median(f[band]), 1e-6)
+            fy, fx = yy[k], xx[k]
+            if fx < 0: fx, fy = -fx, -fy
+            ang = np.degrees(np.arctan2(fy, fx))
+            if abs(ang) < 30 and q > 12: A[i, j] = ang; Pt[i, j] = win/np.hypot(fx, fy); Q[i, j] = q
+    ok = Q > 0                                            # drop wrong FFT peaks: pitch far from the median, angle far off
+    if ok.sum() >= 3:
+        pm = np.median(Pt[ok]); am = np.median(A[ok])
+        bad = ok & ((np.abs(Pt/pm - 1) > 0.2) | (np.abs(A - am) > 12)); Q[bad] = 0; A[bad] = 0; Pt[bad] = 0
+    W_ = gaussian_filter(Q, 1.2) + 1e-6
+    out = dict(x=(xs + x0).astype(np.float32), y=(ys + y0).astype(np.float32),
+               angle=(gaussian_filter(A*Q, 1.2)/W_).astype(np.float32), pitch=(gaussian_filter(Pt*Q, 1.2)/W_).astype(np.float32),
+               quality=Q.astype(np.float32))
+    os.makedirs(os.path.dirname(cp), exist_ok=True); np.savez(cp, **out)
+    return out
+
+def depth_relief(P, job, box):
+    """Fold relief from a small depth network on the region (518 px), plane removed, normalised. Cached."""
+    cp = _cache_path(job, 'depth', list(map(int, box)))
+    if os.path.exists(cp): return np.load(cp)['h']
+    os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1'); os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
+    import torch                                          # optional heavy deps: pip install torch transformers
+    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+    name = 'depth-anything/Depth-Anything-V2-Small-hf'
+    proc = AutoImageProcessor.from_pretrained(name); net = AutoModelForDepthEstimation.from_pretrained(name).eval()
+    crop = P.crop(tuple(map(int, box))); sc = 518/max(crop.size)
+    small = crop.resize((max(1, int(crop.width*sc)), max(1, int(crop.height*sc))), Image.BILINEAR)
+    with torch.no_grad():
+        d = net(**proc(images=small, return_tensors='pt')).predicted_depth[0].numpy()
+    d = np.asarray(Image.fromarray(d.astype(np.float32), mode='F').resize(crop.size, Image.BILINEAR))
+    h = d - gaussian_filter(d, max(crop.size)/6)          # keep folds, drop the overall slope of the body
+    h = (h/max(np.percentile(np.abs(h), 98), 1e-6)).astype(np.float32)
+    os.makedirs(os.path.dirname(cp), exist_ok=True); np.savez(cp, h=h)
+    return h
+
 def run(job):
     P=Image.open(job['photo']).convert('RGB'); logo=Image.open(job['logo']).convert('RGBA')
     lw,lh=logo.size; W=float(job['width']); Hh=W*lh/lw; cx,cy=job['center']; arc=float(job.get('arc',0))
     if W<=2 or lw<2 or lh<2: raise ValueError('logo too small')
+    knit=None
+    if job.get('knit') and job.get('mode','free')=='free':
+        m_=W*0.6+Hh+150; knit=knit_field(P,job,(max(cx-m_,0),max(cy-m_,0),min(cx+m_,P.width),min(cy+m_,P.height)))
+        if knit is not None and 'angle_v' not in job:
+            gx_,gy_=np.meshgrid(knit['x'],knit['y']); near=(np.abs(gx_-cx)<W/2)&(np.abs(gy_-cy)<Hh)&(knit['quality']>0)
+            if near.sum()>=3: job=dict(job,angle_v=float(np.median(knit['angle'][near])))
     ang=np.radians(job.get('angle',0)); angv=np.radians(job.get('angle_v',job.get('angle',0)))
     ex=np.array([np.cos(ang),np.sin(ang)]); ey=np.array([-np.sin(angv),np.cos(angv)])
     B=np.array([[ex[0],ey[0]],[ex[1],ey[1]]])
@@ -155,7 +221,9 @@ def run(job):
     # folds: the shading-derived field is a BACKWARD displacement (photo px -> where on the flat print it comes from);
     # two fixed-point steps make it consistent, a soft clamp keeps strong shadow edges from blowing letters up
     if fold:
-        h=gaussian_filter(Lum,fb)-gaussian_filter(Lum,fb*6); gy,gx=np.gradient(h)
+        if job.get('fold_source')=='depth': h=gaussian_filter(depth_relief(P,job,(x0,y0,x1,y1)),fb/3)
+        else: h=gaussian_filter(Lum,fb)-gaussian_filter(Lum,fb*6)
+        gy,gx=np.gradient(h)
         g=np.hypot(gx,gy); g0=max(1e-6,float(np.percentile(g,95))); sc=np.tanh(g/g0)/np.maximum(g/g0,1e-6)
         DX=fold*gx/g0*sc; DY=fold*gy/g0*sc
         Xs,Ys=X.copy(),Y.copy()
@@ -172,6 +240,22 @@ def run(job):
         u=(th-thc[0,0])*rc[0,0]/W+0.5; v=(sv-svc[0,0])/Hh+0.5        # rows follow the circles, verticals the profile
     else:
         dx,dy=X-cx,Y-cy; xr=Minv[0,0]*dx+Minv[0,1]*dy; yr=Minv[1,0]*dx+Minv[1,1]*dy
+        if knit is not None:
+            # in the logo frame: fabric columns drift with the local knit angle, and the logo compresses where the
+            # knit pitch shrinks (fabric turning away). Built on an 8 px grid, then interpolated per pixel.
+            from scipy.ndimage import map_coordinates
+            st=8.0; gxr=np.arange(-W*0.7,W*0.7+st,st); gyr=np.arange(-Hh*0.9-abs(arc),Hh*0.9+abs(arc)+st,st)
+            XR,YR=np.meshgrid(gxr,gyr); IX=cx+XR*ex[0]+YR*ey[0]; IY=cy+XR*ex[1]+YR*ey[1]
+            fx=np.interp(IX.ravel(),knit['x'],np.arange(len(knit['x']))).reshape(IX.shape)
+            fy=np.interp(IY.ravel(),knit['y'],np.arange(len(knit['y']))).reshape(IY.shape)
+            a_=map_coordinates(knit['angle'],[fy,fx],order=1,mode='nearest'); p_=map_coordinates(knit['pitch'],[fy,fx],order=1,mode='nearest')
+            j0=int(np.argmin(np.abs(gxr))); i0=int(np.argmin(np.abs(gyr)))
+            p0=float(np.median(p_[max(i0-2,0):i0+3,max(j0-2,0):j0+3])); ratio=np.clip(p0/np.maximum(p_,1e-3),0.6,1.4)
+            drift=np.cumsum(np.tan(np.radians(a_)-angv),axis=0)*st; drift-=drift[i0:i0+1]   # column drift vs the logo's verticals
+            cu=np.cumsum(ratio,axis=1)*st; cu-=cu[:,j0:j0+1]                                   # fabric length along the row
+            Ufab=cu+drift*ratio
+            fi=(yr-gyr[0])/st; fj=(xr-gxr[0])/st
+            xr=map_coordinates(Ufab,[fi,fj],order=1,mode='nearest').astype(np.float32)
         u=xr/W+0.5; v=(yr-arc*4*(u-0.5)**2)/Hh+0.5                  # exact inverse of rotation/shear + parabola
     A=np.asarray(logo,np.float32)/255; al_src=A[...,3]
     def samp(img):

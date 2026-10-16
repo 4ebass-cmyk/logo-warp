@@ -44,6 +44,21 @@ The result is written to `out`. If `preview` is set, a close crop around the log
 | `opacity` | 1 by default. Real prints are opaque, and in linear light even 3% transparency turns black grey. |
 | `soft` | edge softness in pixels (about 0.8), to match the photo's focus |
 
+## Heavy options for garments (free mode)
+
+These analyse only the area around the logo. The result is cached in `.mockup_cache/`, so only the first run is slower.
+
+- `"knit": true` is for knitted garments: t-shirts, hoodies, sweatshirts. It reads the direction and spacing of the knit lines
+  around the logo:
+  - `angle_v` is set automatically, and you can still override it;
+  - the logo's verticals follow the knit through folds;
+  - the logo compresses where the fabric turns away from the camera.
+
+  It needs a photo sharp enough to see the knit, roughly 3 px or more per knit line. It costs about 2 s extra on the first run.
+- `"fold_source": "depth"` takes the fold shape from a small depth network instead of the photo's shading. Use it when stains,
+  strong shadows or an existing print fool the shading. It needs `pip install torch transformers`; the first run downloads
+  about 100 MB and takes about 20 s, later runs on the same photo are instant.
+
 ## Modes
 
 Set `"mode"` in the job. All modes share the ink, light, fold and edge settings above.
