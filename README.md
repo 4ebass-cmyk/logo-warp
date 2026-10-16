@@ -41,6 +41,7 @@ The result is written to `out`. If `preview` is set, a close crop around the log
 | `ink` | a one-colour print in hex (`"#1c1917"`). Leave it out to keep the logo's own colours. |
 | `ink_ref` | optional fabric colour the ink colour was measured against. Without it, the fabric around the logo is used. |
 | `light` | 1 = the photo's light and fabric texture show through the ink, 0 = flat ink |
+| `light_blur` | how smooth the light on the ink is. Auto: 1.5 px for dark ink on light fabric (the ink soaks in and keeps the texture), 30 px for light ink on dark fabric (an opaque layer that only takes the broad light) |
 | `opacity` | 1 by default. Real prints are opaque, and in linear light even 3% transparency turns black grey. |
 | `soft` | edge softness in pixels (about 0.8), to match the photo's focus |
 
@@ -58,6 +59,8 @@ These analyse only the area around the logo. The result is cached in `.mockup_ca
 - `"fold_source": "depth"` takes the fold shape from a small depth network instead of the photo's shading. Use it when stains,
   strong shadows or an existing print fool the shading. It needs `pip install torch transformers`; the first run downloads
   about 100 MB and takes about 20 s, later runs on the same photo are instant.
+  **On dark fabrics use depth.** Their shading is mostly noise and knit texture, and shading-based folds tear the letters
+  apart. On light fabrics shading works fine and costs nothing.
 
 ## Modes
 

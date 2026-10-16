@@ -11,6 +11,7 @@ Job JSON:
   "ink": "#1c1917" (one-colour print; omit to keep the logo's own colours),
   "ink_ref": "#d5d4d3" optional fabric colour the ink was measured against; otherwise the local fabric is used,
   "opacity": 1.0, "light": 1.0 (0 = flat ink, 1 = full photo light and texture through the ink), "soft": 0.8,
+  "light_blur": px, how smooth the light on the ink is (auto: 1.5 for dark ink on light fabric, 30 for light ink on dark),
   "mode": "free" (default, settings above) | "quad" | "revolve",
   "knit": true   (free mode, knitted garments) read the knit lines around the logo: sets angle_v automatically,
                  lets the logo's verticals follow the knit through folds, and compresses it where the fabric turns away,
@@ -272,7 +273,12 @@ def run(job):
     s=float(job.get('soft',0.8)); al=gaussian_filter(al,s) if s>0 else al
     # light: the ink takes the fabric's own light and texture (ratio to the fabric colour it sits on)
     ref=to_lin(hexrgb(job['ink_ref'])) if job.get('ink_ref') else np.array([np.median(reg[...,k][al<0.01]) for k in range(3)],np.float32)
-    shade=np.clip(reg/np.maximum(ref,1e-4),0,2.0)
+    # the light that reaches the ink (grey, from luminance). Dark ink on light fabric soaks into it and keeps the fine
+    # texture; light ink on dark fabric is an opaque layer: it only takes the broad light, not the fabric's texture/noise
+    lumw=np.array([0.2126,0.7152,0.0722],np.float32); ink_l=float(np.mean(col@lumw)); fab_l=float(ref@lumw)
+    sm_=float(job.get('light_blur',1.5 if ink_l<=fab_l else 30.0))
+    Lg=gaussian_filter(Lum,sm_) if sm_>0 else Lum
+    shade=np.clip(Lg/max(fab_l,1e-4),0.4 if ink_l<=fab_l else 0.7,1.6 if ink_l<=fab_l else 1.2)[...,None]
     k=float(job.get('light',1.0)); printed=col*(1-k+k*shade)
     a=(al*float(job.get('opacity',1.0)))[...,None]   # real prints are opaque; in linear light even 3% see-through greys black a lot
     out=to_srgb(reg*(1-a)+printed*a)
