@@ -33,8 +33,13 @@ mode "revolve": bottles, mugs, tumblers, cans, cones. The shape is read off the 
   The shape analysis is cached in .mockup_cache/ next to the job, so later runs on the same photo are fast.
 """
 import json, sys, os, hashlib, numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from scipy.ndimage import gaussian_filter
+
+CACHE_VERSION = 2   # bump when the analysis changes, so old caches are not reused
+
+def _photo_id(job):
+    st = os.stat(job['photo']); return [os.path.abspath(job['photo']), st.st_size, int(st.st_mtime), CACHE_VERSION]
 
 def to_lin(c): c=np.asarray(c,np.float32); return np.where(c<=0.04045,c/12.92,((c+0.055)/1.055)**2.4)
 def to_srgb(c): c=np.clip(c,0,1); return np.where(c<=0.0031308,c*12.92,1.055*c**(1/2.4)-0.055)
@@ -54,17 +59,14 @@ def focal_px(P, job):
     rv = job.get('revolve', {})
     if rv.get('focal_px'): return float(rv['focal_px']), 'job'
     if rv.get('focal_mm35'): return float(rv['focal_mm35'])/36.0*max(P.size), 'job (35 mm equiv.)'
-    try:
-        ex = P.getexif(); sub = ex.get_ifd(0x8769); f35 = sub.get(0xA405) or ex.get(0xA405)
-    except Exception:
-        f35 = None
+    f35 = job.get('_exif_f35')
     if f35: return float(f35)/36.0*max(P.size), 'EXIF'   # the 35 mm frame is 36 mm on its long side
     return None, None
 
 def fit_revolve(P, job):
     """Read a body of revolution off the photo: axis, radius profile, camera tilt. Analysis runs on a 1/4 copy."""
     rv = job['revolve']; S = 4
-    key = hashlib.md5(json.dumps([os.path.abspath(job['photo']), rv], sort_keys=True).encode()).hexdigest()[:12]
+    key = hashlib.md5(json.dumps([_photo_id(job), rv], sort_keys=True).encode()).hexdigest()[:12]
     cache = os.path.join(os.path.dirname(os.path.abspath(job.get('_job_path', 'x'))), '.mockup_cache', key + '.json')
     if os.path.exists(cache): return json.load(open(cache))
     sm = np.asarray(P.resize((P.width//S, P.height//S), Image.BILINEAR), np.float32)
@@ -125,17 +127,18 @@ def revolve_maps(model, X, Y):
     """photo px (full res) -> angle around the axis, length along the profile (px), radius (px), visible mask"""
     S = model['scale']; ax = np.array(model['ax']); rows = np.array(model['rows']); r = np.array(model['r'])
     beta = model['phi'] + np.arctan((rows - model['cy'])/model['f']); k = np.sin(beta)
-    ds = np.sqrt((1/np.maximum(np.cos(beta), 0.2))**2 + np.gradient(r)**2)
-    s_tab = np.concatenate([[0], np.cumsum((ds[1:] + ds[:-1])/2)])
+    ds = np.sqrt((1/np.maximum(np.cos(beta), 0.2))**2 + np.gradient(r, rows)**2)      # per image row
+    s_tab = np.concatenate([[0], np.cumsum((ds[1:] + ds[:-1])/2*np.diff(rows))])
     x = X/S; y = Y/S; y0 = y.copy()
     for _ in range(8):
         rr = np.interp(y0, rows, r); sn = np.clip((x - np.polyval(ax, y0))/np.maximum(rr, 1e-3), -1, 1)
         y0 = y - np.interp(y0, rows, k)*rr*np.sqrt(1 - sn*sn)
     rr = np.interp(y0, rows, r); sn = (x - np.polyval(ax, y0))/np.maximum(rr, 1e-3)
-    return np.arcsin(np.clip(sn, -1, 1)), np.interp(y0, rows, s_tab)*S, rr*S, np.abs(sn) < 0.995
+    vis = (np.abs(sn) < 0.995) & (y0 >= rows[0]) & (y0 <= rows[-1])
+    return np.arcsin(np.clip(sn, -1, 1)), np.interp(y0, rows, s_tab)*S, rr*S, vis
 
 def _cache_path(job, tag, extra):
-    key = hashlib.md5(json.dumps([os.path.abspath(job['photo']), tag, extra], sort_keys=True).encode()).hexdigest()[:12]
+    key = hashlib.md5(json.dumps([_photo_id(job), tag, extra], sort_keys=True).encode()).hexdigest()[:12]
     return os.path.join(os.path.dirname(os.path.abspath(job.get('_job_path', 'x'))), '.mockup_cache', f'{tag}-{key}.npz')
 
 def knit_field(P, job, box, step=64, win=128):
@@ -191,7 +194,22 @@ def depth_relief(P, job, box):
     return h
 
 def run(job):
-    P=Image.open(job['photo']).convert('RGB'); logo=Image.open(job['logo']).convert('RGBA')
+    raw=Image.open(job['photo'])
+    try:
+        ex_=raw.getexif(); f35=ex_.get_ifd(0x8769).get(0xA405) or ex_.get(0xA405)
+    except Exception: f35=None
+    job=dict(job,_exif_f35=f35)
+    raw=ImageOps.exif_transpose(raw)                     # phone photos: work in the orientation people see
+    photo_alpha=None
+    if raw.mode in ('RGBA','LA','PA') or (raw.mode=='P' and 'transparency' in raw.info):
+        rgba=raw.convert('RGBA'); photo_alpha=rgba.getchannel('A')
+        P=Image.alpha_composite(Image.new('RGBA',rgba.size,(255,255,255,255)),rgba).convert('RGB')
+    else:
+        P=raw.convert('RGB')                              # also handles CMYK, greyscale, 16-bit
+    logo=Image.open(job['logo']).convert('RGBA')
+    if job.get('mode')=='quad':                           # quad needs only its corners
+        q_=np.array(job['quad'],float)
+        job=dict(job,center=job.get('center',q_.mean(0).tolist()),width=job.get('width',float(np.hypot(*(q_[1]-q_[0])))))
     lw,lh=logo.size; W=float(job['width']); Hh=W*lh/lw; cx,cy=job['center']; arc=float(job.get('arc',0))
     if W<=2 or lw<2 or lh<2: raise ValueError('logo too small')
     knit=None
@@ -200,10 +218,15 @@ def run(job):
         if knit is not None and 'angle_v' not in job:
             gx_,gy_=np.meshgrid(knit['x'],knit['y']); near=(np.abs(gx_-cx)<W/2)&(np.abs(gy_-cy)<Hh)&(knit['quality']>0)
             if near.sum()>=3: job=dict(job,angle_v=float(np.median(knit['angle'][near])))
+        if knit is not None:
+            gx_,gy_=np.meshgrid(knit['x'],knit['y']); near=(np.abs(gx_-cx)<W/2)&(np.abs(gy_-cy)<Hh+64)&(knit['quality']>0)
+            if near.sum()<3: knit=None                     # knit not readable here (blurry or web image): skip it
     ang=np.radians(job.get('angle',0)); angv=np.radians(job.get('angle_v',job.get('angle',0)))
     ex=np.array([np.cos(ang),np.sin(ang)]); ey=np.array([-np.sin(angv),np.cos(angv)])
     B=np.array([[ex[0],ey[0]],[ex[1],ey[1]]])
-    if abs(np.linalg.det(B))<0.3: raise ValueError('angle and angle_v too far apart')
+    if abs(np.linalg.det(B))<0.3:
+        if job.get('mode','free')=='free': raise ValueError('angle and angle_v too far apart')
+        ex,ey=np.array([1.0,0]),np.array([0,1.0]); B=np.eye(2)
     Minv=np.linalg.inv(B).astype(np.float32)
     def fwd(u,v):
         x=(u-0.5)*W; y=(v-0.5)*Hh+arc*4*(u-0.5)**2
@@ -271,6 +294,9 @@ def run(job):
             fx=np.interp(IX.ravel(),knit['x'],np.arange(len(knit['x']))).reshape(IX.shape)
             fy=np.interp(IY.ravel(),knit['y'],np.arange(len(knit['y']))).reshape(IY.shape)
             a_=map_coordinates(knit['angle'],[fy,fx],order=1,mode='nearest'); p_=map_coordinates(knit['pitch'],[fy,fx],order=1,mode='nearest')
+            q_=map_coordinates((knit['quality']>0).astype(np.float32),[fy,fx],order=1,mode='nearest')
+            a_=np.where(q_>0.5,a_,np.degrees(angv)); p_=np.where(q_>0.5,p_,np.nan)       # no data: no drift, no stretch
+            p_=np.where(np.isnan(p_),np.nanmedian(p_) if np.isfinite(p_).any() else 1.0,p_)
             j0=int(np.argmin(np.abs(gxr))); i0=int(np.argmin(np.abs(gyr)))
             p0=float(np.median(p_[max(i0-2,0):i0+3,max(j0-2,0):j0+3])); ratio=np.clip(p0/np.maximum(p_,1e-3),0.6,1.4)
             drift=np.cumsum(np.tan(np.radians(a_)-angv),axis=0)*st; drift-=drift[i0:i0+1]   # column drift vs the logo's verticals
@@ -291,21 +317,35 @@ def run(job):
         col=np.broadcast_to(to_lin(hexrgb(job['ink'])),reg.shape)
     else:                                                          # premultiplied sampling: no fringes from hidden RGB
         pm=samp(to_lin(A[...,:3])*al_src[...,None]); col=pm/np.maximum(samp(al_src)[...,None],1e-4)
-    s=float(job.get('soft',0.8)); al=gaussian_filter(al,s) if s>0 else al
+    s=float(job.get('soft',0.8))
+    if s>0:
+        if not job.get('ink'):                               # blur colour premultiplied, or edges go dark
+            pmc=np.stack([gaussian_filter(col[...,c]*al,s) for c in range(3)],-1); al=gaussian_filter(al,s)
+            col=pmc/np.maximum(al[...,None],1e-4)
+        else: al=gaussian_filter(al,s)
     # light: the ink takes the fabric's own light and texture (ratio to the fabric colour it sits on)
-    ref=to_lin(hexrgb(job['ink_ref'])) if job.get('ink_ref') else np.array([np.median(reg[...,k][al<0.01]) for k in range(3)],np.float32)
+    bgm=al<0.01
+    if job.get('ink_ref'): ref=to_lin(hexrgb(job['ink_ref']))
+    elif bgm.sum()>=16: ref=np.array([np.median(reg[...,k][bgm]) for k in range(3)],np.float32)
+    else: ref=np.median(reg.reshape(-1,3),0).astype(np.float32)     # the logo covers the whole crop
+    ref=np.maximum(ref,1e-4)
     # the light that reaches the ink (grey, from luminance). Dark ink on light fabric soaks into it and keeps the fine
     # texture; light ink on dark fabric is an opaque layer: it only takes the broad light, not the fabric's texture/noise
     lumw=np.array([0.2126,0.7152,0.0722],np.float32); ink_l=float(np.mean(col@lumw)); fab_l=float(ref@lumw)
     sm_=float(job.get('light_blur',1.5 if ink_l<=fab_l else 30.0))
     Lg=gaussian_filter(Lum,sm_) if sm_>0 else Lum
     shade=np.clip(Lg/max(fab_l,1e-4),0.4 if ink_l<=fab_l else 0.7,1.6 if ink_l<=fab_l else 1.2)[...,None]
-    k=float(job.get('light',1.0)); printed=col*(1-k+k*shade)
+    k=float(job.get('light',1.0)); printed=col*(1-k+k*shade) if k>0 else col
     a=(al*float(job.get('opacity',1.0)))[...,None]   # real prints are opaque; in linear light even 3% see-through greys black a lot
     out=to_srgb(reg*(1-a)+printed*a)
     P.paste(Image.fromarray((out*255+0.5).astype(np.uint8)),(x0,y0))
-    P.save(job['out'],quality=93)
-    if job.get('preview'): P.crop((max(x0-150,0),max(y0-150,0),min(x1+150,P.width),min(y1+150,P.height))).save(job['preview'])
+    for k_ in ('out','preview'):
+        if job.get(k_): os.makedirs(os.path.dirname(os.path.abspath(job[k_])),exist_ok=True)
+    final=P
+    if photo_alpha is not None and os.path.splitext(job['out'])[1].lower() in ('.png','.webp','.tif','.tiff'):
+        final=P.copy(); final.putalpha(photo_alpha)          # transparent product shots stay transparent
+    final.save(job['out'],quality=93)
+    if job.get('preview'): final.crop((max(x0-150,0),max(y0-150,0),min(x1+150,P.width),min(y1+150,P.height))).save(job['preview'])
     return (x0,y0,x1,y1)
 
 if __name__=='__main__':

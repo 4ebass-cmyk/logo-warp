@@ -78,7 +78,7 @@ order top-left, top-right, bottom-right, bottom-left:
 "mode": "quad", "quad": [[2080,2560],[3600,2552],[3600,2900],[2080,2908]]
 ```
 
-Use `fitplane.py` when you need exact perspective from a feature of known size.
+`center` and `width` are not needed in this mode. Use `fitplane.py` when you need exact perspective from a feature of known size.
 
 **`revolve`** is for bottles, mugs, tumblers, cans and cones. The shape is read off the photo itself:
 
@@ -103,6 +103,13 @@ Use `fitplane.py` when you need exact perspective from a feature of known size.
 - For the `ring`, pick a clean circle on the product: a lid seam, rim or step. A rounded bottom edge exaggerates the curve.
 - The fitted camera tilt and how well the ring matched are saved in `.mockup_cache/`. Later runs on the same photo
   reuse it, so trying different logos or positions is fast.
+
+## Inputs and outputs
+
+- Photos can be JPG, PNG, WebP or TIFF, in RGB, greyscale or CMYK. Phone photos are turned upright using EXIF orientation.
+- A transparent product PNG stays transparent if `out` is a `.png`; for a `.jpg` it is put on white.
+- Output folders are created automatically.
+- `.mockup_cache/` is keyed by the photo's path, size and date, so a replaced photo is analysed again.
 
 ## Getting it to look right
 
