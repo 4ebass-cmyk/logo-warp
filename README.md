@@ -44,6 +44,39 @@ The result is written to `out`. If `preview` is set, a close crop around the log
 | `opacity` | 1 by default. Real prints are opaque, and in linear light even 3% transparency turns black grey. |
 | `soft` | edge softness in pixels (about 0.8), to match the photo's focus |
 
+## Modes
+
+Set `"mode"` in the job. All modes share the ink, light, fold and edge settings above.
+
+**`free`** (default) is for garments and soft goods. Place the logo with `center`, `width`, `angle`, `angle_v` and `arc`.
+
+**`quad`** is for flat faces: box sides, labels, laptop sleeves, notebooks. Give the logo box corners in the photo, in the
+order top-left, top-right, bottom-right, bottom-left:
+
+```
+"mode": "quad", "quad": [[2080,2560],[3600,2552],[3600,2900],[2080,2908]]
+```
+
+Use `fitplane.py` when you need exact perspective from a feature of known size.
+
+**`revolve`** is for bottles, mugs, tumblers, cans and cones. The shape is read off the photo itself:
+
+```
+"mode": "revolve",
+"revolve": {
+  "body": [2450, 4200],                       // photo rows where the outline is clean
+  "axis_rows": [[2260, 2380], [4500, 6200]],  // optional: rows where BOTH outline edges are visible
+  "ring": [2380, 2540],                       // a band holding the front arc of one circular edge
+  "side": "left"                              // which edge gives the radius if a handle hides the other
+},
+"center": [1860, 3300], "width": 760
+```
+
+- The camera focal length comes from the photo's EXIF. If the EXIF is missing, set `revolve.focal_px` (focal length in pixels).
+- For the `ring`, pick a clean circle on the product: a lid seam, rim or step. A rounded bottom edge exaggerates the curve.
+- The fitted camera tilt and how well the ring matched are saved in `.mockup_cache/`. Later runs on the same photo
+  reuse it, so trying different logos or positions is fast.
+
 ## Getting it to look right
 
 - Match the ink to a real print on the same product, if there is one. Sample its darkest core colour and the fabric next to it, and use them as `ink` and `ink_ref`.

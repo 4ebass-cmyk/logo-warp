@@ -14,7 +14,14 @@ physically printed on the product, in its perspective, curvature, folds and ligh
    - Hems, seams, straight edges and rims give the row direction (`angle`) and the curve (`arc`).
    - Knit lines, side seams and the placket give the verticals (`angle_v`). On garments these often differ from the rows.
    - Measure the angles in pixels on a crop. Never guess them.
-4. Write a job JSON (see `examples/job-example.json`) and run `python mockup.py job.json`.
+4. Write a job JSON (see `examples/job-example.json`) and run `python mockup.py job.json`. Pick the mode by product type:
+   - flat → `"mode": "quad"`
+   - round and rigid → `"mode": "revolve"`
+   - soft → `"mode": "free"` (default)
+
+   For `revolve`, check the result's cache file in `.mockup_cache/`. `ring_err_px` should be a few pixels and `camera_tilt_deg`
+   should match the view: positive means the camera looks down. If it does not, the ring band caught the wrong edge.
+   Draw `ring_pts` over the photo to see what it caught, then move the band.
 5. Open the `preview` crop and check it:
    - Are the letter stems parallel to the product's verticals?
    - Do the rows follow the hem or rim?

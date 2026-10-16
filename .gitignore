@@ -4,3 +4,4 @@ out/
 *.jpg
 !examples/*.jpg
 .DS_Store
+.mockup_cache/
