@@ -72,7 +72,13 @@ Use `fitplane.py` when you need exact perspective from a feature of known size.
 "center": [1860, 3300], "width": 760
 ```
 
-- The camera focal length comes from the photo's EXIF. If the EXIF is missing, set `revolve.focal_px` (focal length in pixels).
+- Focal length: taken from EXIF if the photo has it. Web images usually do not; then 50 mm (35 mm equivalent) is assumed.
+  This is safe as long as the `ring` is close to the logo's height: the ring sets the curve where the logo is, and the
+  focal length only changes how that curve grows further up or down. On a test tumbler, 50 mm instead of the true 55 mm
+  moved the logo ends by under 1 px; even 24 or 135 mm moved them by about 8 px.
+- `ring2` (optional) is a second circle at another height, used to estimate the focal length when there is no EXIF.
+  Use it only on SHARP circular edges (rims, seams, piping). A rounded bottom edge exaggerates the curve and gives a
+  wrong focal length. If in doubt, leave `ring2` out. You can also set `focal_mm35` yourself.
 - For the `ring`, pick a clean circle on the product: a lid seam, rim or step. A rounded bottom edge exaggerates the curve.
 - The fitted camera tilt and how well the ring matched are saved in `.mockup_cache/`. Later runs on the same photo
   reuse it, so trying different logos or positions is fast.

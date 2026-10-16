@@ -22,6 +22,8 @@ physically printed on the product, in its perspective, curvature, folds and ligh
    For `revolve`, check the result's cache file in `.mockup_cache/`. `ring_err_px` should be a few pixels and `camera_tilt_deg`
    should match the view: positive means the camera looks down. If it does not, the ring band caught the wrong edge.
    Draw `ring_pts` over the photo to see what it caught, then move the band.
+   Web images usually have no EXIF. Pick the `ring` close to the logo's height, and only add `ring2` if there is a second
+   SHARP circle (rim, seam). `focal_source` in the cache says where the focal length came from.
 5. Open the `preview` crop and check it:
    - Are the letter stems parallel to the product's verticals?
    - Do the rows follow the hem or rim?

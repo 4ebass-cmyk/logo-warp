@@ -19,7 +19,9 @@ mode "revolve": bottles, mugs, tumblers, cans, cones. The shape is read off the 
               "axis_rows": [[y_top, y_bottom], ...] optional rows where BOTH outline edges are visible (axis fit),
               "ring": [y_top, y_bottom]   a band holding the FRONT arc of one circular edge (rim, step, lid edge),
               "side": "both"|"left"|"right"  which outline edge gives the radius (a handle hides the other),
-              "focal_px": optional, otherwise from EXIF (35 mm equivalent)}
+              "ring2": optional second circle band at another height; used to estimate the focal length when
+                       the photo has no EXIF (typical for web images),
+              "focal_px" or "focal_mm35": optional; otherwise EXIF, else ring2, else 50 mm equivalent}
   "center": [x,y] where the logo's middle goes, "width": its width in px measured at that point.
   The logo's rows follow the product's circles, its verticals follow the product's profile.
   The shape analysis is cached in .mockup_cache/ next to the job, so later runs on the same photo are fast.
@@ -42,11 +44,16 @@ def quad_uv(q, X, Y):
     return (Hm[0, 0]*X + Hm[0, 1]*Y + Hm[0, 2])/w, (Hm[1, 0]*X + Hm[1, 1]*Y + Hm[1, 2])/w
 
 def focal_px(P, job):
+    """focal length in full-res px and where it came from: job, EXIF, or None (to be estimated / defaulted)"""
     rv = job.get('revolve', {})
-    if rv.get('focal_px'): return float(rv['focal_px'])
-    ex = P.getexif(); sub = ex.get_ifd(0x8769); f35 = sub.get(0xA405) or ex.get(0xA405)
-    if not f35: raise ValueError('no EXIF FocalLengthIn35mmFilm: set revolve.focal_px')
-    return float(f35)/36.0*max(P.size)                   # the 35 mm frame is 36 mm on its long side
+    if rv.get('focal_px'): return float(rv['focal_px']), 'job'
+    if rv.get('focal_mm35'): return float(rv['focal_mm35'])/36.0*max(P.size), 'job (35 mm equiv.)'
+    try:
+        ex = P.getexif(); sub = ex.get_ifd(0x8769); f35 = sub.get(0xA405) or ex.get(0xA405)
+    except Exception:
+        f35 = None
+    if f35: return float(f35)/36.0*max(P.size), 'EXIF'   # the 35 mm frame is 36 mm on its long side
+    return None, None
 
 def fit_revolve(P, job):
     """Read a body of revolution off the photo: axis, radius profile, camera tilt. Analysis runs on a 1/4 copy."""
@@ -74,22 +81,37 @@ def fit_revolve(P, job):
     rows = E[:, 0]; xc = np.polyval(ax, rows); side = rv.get('side', 'both')
     r = {'left': xc - E[:, 1], 'right': E[:, 2] - xc}.get(side, (E[:, 2] - E[:, 1])/2)
     r = gaussian_filter(r, 3)
-    # ring: the front arc of one circular edge = strongest vertical brightness change inside the band
-    gy = np.abs(np.gradient(gaussian_filter(sm.mean(2), 1.2), axis=0))
-    ra, rb = int(rv['ring'][0]/S), int(rv['ring'][1]/S); ym = (ra + rb)/2
-    xcm = np.polyval(ax, ym); rm = float(np.interp(ym, rows, r))
-    xs = np.arange(int(xcm - 0.8*rm), int(xcm + 0.8*rm))
-    ring = np.array([(x, ra + int(np.argmax(gy[ra:rb, x]*obj[ra:rb, x]))) for x in xs], float)
-    f = focal_px(P, job)/S; cyi = P.height/S/2
-    def err(phi):                      # front arc: y = y0 + k(y0)*r*cos(theta), k = sin(phi + atan((y0 - cy)/f))
+    # rings: the front arc of a circular edge = strongest vertical brightness change inside the band
+    gy = np.abs(np.gradient(gaussian_filter(sm.mean(2), 1.2), axis=0)); cyi = P.height/S/2
+    def get_ring(band):
+        ra, rb = int(band[0]/S), int(band[1]/S); ym = (ra + rb)/2
+        xcm = np.polyval(ax, ym); rm = float(np.interp(ym, rows, r))
+        xs = np.arange(int(xcm - 0.8*rm), int(xcm + 0.8*rm))
+        return np.array([(x, ra + int(np.argmax(gy[ra:rb, x]*obj[ra:rb, x]))) for x in xs], float), ra, rb, rm
+    def err(ring, ra, rb, rm, phi, f):  # front arc: y = y0 + k(y0)*r*cos(theta), k = sin(phi + atan((y0 - cy)/f))
         best = 1e9
         for y0r in np.arange(ra - rm*0.8, rb + 1, 0.5):
             k = np.sin(phi + np.arctan((y0r - cyi)/f)); sn = np.clip((ring[:, 0] - np.polyval(ax, y0r))/rm, -1, 1)
             best = min(best, float(np.median(np.abs(y0r + k*rm*np.sqrt(1 - sn*sn) - ring[:, 1]))))
         return best
-    phis = np.radians(np.arange(-10, 45, 0.5)); errs = [err(p) for p in phis]; phi = float(phis[int(np.argmin(errs))])
+    phis = np.radians(np.arange(-10, 45, 0.5))
+    def fit_phi(R1, f):
+        e = [err(*R1, p, f) for p in phis]; i = int(np.argmin(e)); return float(phis[i]), e[i]
+    R1 = get_ring(rv['ring'])
+    f_full, f_src = focal_px(P, job)
+    if f_full is None and rv.get('ring2'):
+        # no EXIF: a second circle at another height pins the focal length (how fast the curve changes with height)
+        R2 = get_ring(rv['ring2']); best = None
+        for mm in (18, 24, 28, 35, 42, 50, 60, 70, 85, 105, 135, 200, 300):
+            fs = mm/36.0*max(P.size)/S; phi_, e1 = fit_phi(R1, fs); e2 = err(*R2, phi_, fs)   # one camera must explain both arcs
+            if best is None or e1 + e2 < best[0]: best = (e1 + e2, mm)
+        f_full, f_src = best[1]/36.0*max(P.size), f'estimated from 2 rings ({best[1]} mm equiv.)'
+    if f_full is None:
+        f_full, f_src = 50/36.0*max(P.size), 'default 50 mm equiv. (no EXIF): keep the ring near the logo height'
+    f = f_full/S; phi, e = fit_phi(R1, f)
     model = dict(scale=S, ax=[float(a) for a in ax], rows=rows.tolist(), r=r.tolist(), phi=phi, f=f, cy=cyi,
-                 ring_err_px=float(min(errs))*S, camera_tilt_deg=float(np.degrees(phi)), ring_pts=(ring*S).tolist())
+                 focal_source=f_src, focal_mm35=round(f_full/max(P.size)*36, 1),
+                 ring_err_px=float(e)*S, camera_tilt_deg=float(np.degrees(phi)), ring_pts=(R1[0]*S).tolist())
     os.makedirs(os.path.dirname(cache), exist_ok=True); json.dump(model, open(cache, 'w'))
     return model
 
