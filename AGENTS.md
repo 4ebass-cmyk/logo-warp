@@ -21,7 +21,8 @@ physically printed on the product, in its perspective, curvature, folds and ligh
 
    On knitted garments add `"knit": true`: it measures `angle_v` and the fabric's drift for you. If folds come out
    wrong because of shadows, stains or an old print, add `"fold_source": "depth"` (needs torch + transformers).
-   On DARK fabrics always use `"fold_source": "depth"`: shading folds tear letters apart there.
+   On DARK fabrics depth is needed: shading folds tear letters apart there. The default `"fold_source": "auto"` picks
+   depth on dark fabric when torch is installed. If letters still break at a sharp fold, lower `fold` or `fold_max_stretch`.
 
    For `revolve`, check the result's cache file in `.mockup_cache/`. `ring_err_px` should be a few pixels and `camera_tilt_deg`
    should match the view: positive means the camera looks down. If it does not, the ring band caught the wrong edge.

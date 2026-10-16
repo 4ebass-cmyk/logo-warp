@@ -15,8 +15,9 @@ Job JSON:
   "mode": "free" (default, settings above) | "quad" | "revolve",
   "knit": true   (free mode, knitted garments) read the knit lines around the logo: sets angle_v automatically,
                  lets the logo's verticals follow the knit through folds, and compresses it where the fabric turns away,
-  "fold_source": "shading" (default) | "depth"   what the fold displacement is computed from; "depth" uses a small
-                 depth network (needs torch + transformers) and is not fooled by stains, shadows or existing prints }
+  "fold_source": "auto" (default) | "shading" | "depth"   what the fold displacement is computed from. "depth" uses a
+                 small depth network (needs torch + transformers) and is not fooled by stains, shadows or existing prints;
+                 "auto" picks depth on dark fabric (where shading is mostly noise) if torch is installed, else shading }
 
 mode "quad": "quad": [[x,y] top-left, top-right, bottom-right, bottom-left] of the logo box in the photo (flat faces).
 mode "revolve": bottles, mugs, tumblers, cans, cones. The shape is read off the photo:
@@ -222,15 +223,35 @@ def run(job):
     # folds: the shading-derived field is a BACKWARD displacement (photo px -> where on the flat print it comes from);
     # two fixed-point steps make it consistent, a soft clamp keeps strong shadow edges from blowing letters up
     if fold:
-        if job.get('fold_source')=='depth': h=gaussian_filter(depth_relief(P,job,(x0,y0,x1,y1)),fb/3)
+        src_=job.get('fold_source','auto')
+        if src_=='auto':
+            src_='shading'
+            if float(np.median(Lum))<0.06:                  # dark fabric (about sRGB 70 and below)
+                try:
+                    import importlib.util as _iu
+                    if _iu.find_spec('torch') and _iu.find_spec('transformers'): src_='depth'
+                except Exception: pass
+        if src_=='depth': h=gaussian_filter(depth_relief(P,job,(x0,y0,x1,y1)),fb)   # depth steps at fold edges: smooth like shading
         else: h=gaussian_filter(Lum,fb)-gaussian_filter(Lum,fb*6)
         gy,gx=np.gradient(h)
         g=np.hypot(gx,gy); g0=max(1e-6,float(np.percentile(g,95))); sc=np.tanh(g/g0)/np.maximum(g/g0,1e-6)
         DX=fold*gx/g0*sc; DY=fold*gy/g0*sc
+        # keep the logo where it was placed: remove the field's average shift under the logo
+        iyc,ixc=int(np.clip(cy-y0,0,y1-y0-1)),int(np.clip(cx-x0,0,x1-x0-1)); r_=int(max(8,min(W,Hh)/2))
+        DX-=float(np.median(DX[max(iyc-r_,0):iyc+r_,max(ixc-r_*2,0):ixc+r_*2])); DY-=float(np.median(DY[max(iyc-r_,0):iyc+r_,max(ixc-r_*2,0):ixc+r_*2]))
+        # no tearing: where the field changes faster than the fabric can (map folding over itself), scale it down;
+        # at a sharp fold the print is squeezed instead of being cut
+        lim=float(job.get('fold_max_stretch',0.35))
+        for _ in range(4):
+            jx=np.abs(np.gradient(DX,axis=1))+np.abs(np.gradient(DX,axis=0)); jy=np.abs(np.gradient(DY,axis=1))+np.abs(np.gradient(DY,axis=0))
+            k_=np.minimum(1.0,lim/np.maximum(np.maximum(jx,jy),1e-6))
+            if k_.min()>0.98: break
+            k_=np.minimum(k_,gaussian_filter(k_,fb/2)); DX=gaussian_filter(DX*k_,fb/4); DY=gaussian_filter(DY*k_,fb/4)
         Xs,Ys=X.copy(),Y.copy()
+        from scipy.ndimage import map_coordinates as _mc
         for _ in range(2):
-            ix=np.clip((Xs-x0).astype(int),0,x1-x0-1); iy=np.clip((Ys-y0).astype(int),0,y1-y0-1)
-            Xs=X+DX[iy,ix]; Ys=Y+DY[iy,ix]
+            cc=[np.clip(Ys-y0,0,y1-y0-1),np.clip(Xs-x0,0,x1-x0-1)]
+            Xs=X+_mc(DX,cc,order=1); Ys=Y+_mc(DY,cc,order=1)
         X,Y=Xs,Ys
     mode=job.get('mode','free'); vis=None
     if mode=='quad':

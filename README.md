@@ -56,6 +56,9 @@ These analyse only the area around the logo. The result is cached in `.mockup_ca
   - the logo compresses where the fabric turns away from the camera.
 
   It needs a photo sharp enough to see the knit, roughly 3 px or more per knit line. It costs about 2 s extra on the first run.
+- `"fold_source"` is `"auto"` by default: on dark fabric it uses depth if torch is installed, otherwise shading.
+  The fold field is re-centred so the logo stays where you placed it, and it is limited so the print is squeezed at sharp
+  folds instead of being cut (`fold_max_stretch`, default 0.35).
 - `"fold_source": "depth"` takes the fold shape from a small depth network instead of the photo's shading. Use it when stains,
   strong shadows or an existing print fool the shading. It needs `pip install torch transformers`; the first run downloads
   about 100 MB and takes about 20 s, later runs on the same photo are instant.
