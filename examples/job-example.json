@@ -1,0 +1,16 @@
+{
+  "photo": "path/to/product-photo.jpg",
+  "logo": "examples/nordvik.png",
+  "out": "out/mockup.jpg",
+  "preview": "out/mockup-crop.png",
+  "center": [2640, 3540],
+  "width": 920,
+  "angle": 8,
+  "angle_v": 2.5,
+  "arc": 26,
+  "fold": 9,
+  "fold_blur": 20,
+  "ink": "#1c1917",
+  "light": 1.0,
+  "soft": 0.8
+}
